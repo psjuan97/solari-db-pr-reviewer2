@@ -20,8 +20,10 @@ async def main() -> None:
     async with SandboxClient(api_key=key, base_url="https://api.getsolari.com") as client:
         db, sandbox = await open_db(client)
         try:
-            ok, out = await db.run_sql("hello.sql", "SELECT 1 AS one;")
-            print(f"SELECT 1 -> ok={ok}\n{out}")
+            await db.load_base_state("CREATE TABLE ping (ok bool);")
+            await db.reset()  # fork `review` from base_state
+            ok, out = await db.run_sql("hello.sql", "INSERT INTO ping VALUES (true); SELECT * FROM ping;")
+            print(f"fork + insert -> ok={ok}\n{out}")
             snap = await db.snapshot("pg-base")
             print(f"\nsnapshot: {snap}   (save as PG_SNAPSHOT_ID in .env)")
         finally:

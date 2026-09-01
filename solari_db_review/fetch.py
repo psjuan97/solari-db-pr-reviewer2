@@ -30,8 +30,13 @@ def from_fixture(fixture_dir: str) -> ReviewSpec:
         files.append(SqlFile(name=p.name, sql=p.read_text(encoding="utf-8")))
     if not files:
         raise SystemExit(f"no changes/*.sql in {root}")
-    return ReviewSpec(title=f"fixture: {root.name}", base_schema=schema_path.read_text(
-        encoding="utf-8"), changes=files)
+    seed_path = root / "seed.sql"  # optional
+    return ReviewSpec(
+        title=f"fixture: {root.name}",
+        base_schema=schema_path.read_text(encoding="utf-8"),
+        changes=files,
+        seed_data=seed_path.read_text(encoding="utf-8") if seed_path.exists() else None,
+    )
 
 
 def from_pr(pr: str, schema_path: str = "schema.sql") -> ReviewSpec:

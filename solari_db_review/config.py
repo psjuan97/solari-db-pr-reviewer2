@@ -13,11 +13,15 @@ class ReviewSpec:
         title: Human label for the review (PR title, or the fixture name).
         base_schema: DDL that sets up the database the changes run against.
         changes: The changed SQL files - (filename, sql) pairs, in PR order.
+        seed_data: Optional SQL run after the schema when building the known
+            state - a representative data dump, so "runs cleanly" is checked
+            against a realistic table, not an empty one. Every fork carries it.
     """
 
     title: str
     base_schema: str
     changes: List["SqlFile"]
+    seed_data: Optional[str] = None
 
 
 @dataclass(frozen=True)

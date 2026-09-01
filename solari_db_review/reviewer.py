@@ -4,10 +4,15 @@
     res  = await review(spec, ReviewOptions(), solari_key, anthropic_key)
     print(res.markdown)
 
+The base schema (+ optional seed data) is loaded once into a `base_state`
+template DB. Every check - each changed file, and each of the fix agent's
+attempts - runs on a fresh ~0.5s *fork* of that template, so all checks start
+from an identical known state no matter how big the seed is.
+
 For a failing file the fix agent (see propose.py) runs a debug loop against a
-scratch database in the same sandbox. Whatever it returns is then re-checked
-against the authoritative `review` database - that result, not the agent's
-word, is what the review reports.
+scratch fork in the same sandbox. Whatever it returns is then re-checked
+against the authoritative `review` fork - that result, not the agent's word,
+is what the review reports.
 """
 from __future__ import annotations
 
@@ -44,9 +49,9 @@ async def review(
                 except Exception:  # noqa: BLE001 - snapshotting is a nicety
                     pass
 
-            schema_ok, schema_out = await db.load_schema(spec.base_schema)
-            if not schema_ok:
-                raise RuntimeError(f"base schema failed to load:\n{schema_out}")
+            base_ok, base_out = await db.load_base_state(spec.base_schema, spec.seed_data)
+            if not base_ok:
+                raise RuntimeError(f"base state failed to build:\n{base_out}")
 
             for change in spec.changes:
                 result.statements.append(

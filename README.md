@@ -33,14 +33,23 @@ is captured with `sandbox.snapshot()`; from the second run on, the VM boots
 with Postgres already there.
 
 The check is deliberately simple, and matches what "does this PR work" usually
-means in practice: each file is run with `psql -v ON_ERROR_STOP=1` against a
-freshly reset copy of the base schema. **It runs cleanly** = every statement
-finished with no error, under a `statement_timeout`. It does not judge query
-*semantics* — only that it executes and finishes.
+means in practice: each file is run with `psql -v ON_ERROR_STOP=1`. **It runs
+cleanly** = every statement finished with no error, under a `statement_timeout`.
+It does not judge query *semantics* — only that it executes and finishes.
 
-The fix agent gets its own `review_scratch` database in the same VM, reset to
-the clean schema before every candidate, so it can experiment without touching
-the authoritative result. It's told not to weaken the migration (no dropping
+**Snapshot-and-fork.** The base schema — plus an optional `seed.sql` of
+representative data — is loaded **once** into a `base_state` template database.
+Every check then runs on a fresh **fork** of it:
+
+```
+createdb --template=base_state <db>     # ~0.5s, and flat regardless of data size
+```
+
+The reviewer forks `review` before each changed file; the fix agent forks
+`review_scratch` before every candidate it tries. All checks start from an
+identical known state, `base_state` is never written to, and forking stays
+fast even when the known state is a realistic dump rather than three empty
+tables. The fix agent is told not to weaken the migration (no dropping
 constraints, no deleting the failing statement) — fix the cause, don't hide it.
 Its debug loop is capped by `ReviewOptions.max_fix_iters` (default 6).
 
@@ -102,15 +111,15 @@ solari_db_review/
 ├── config.py       ReviewSpec, ReviewOptions, StatementResult, ReviewResult (dataclasses)
 ├── env.py          tiny .env reader (no dependency)
 ├── fetch.py        input → ReviewSpec:  from_fixture(dir)  |  from_pr(url) via gh CLI
-├── sandbox_db.py   boot a Solari sandbox, install+start postgres; `review` DB (verdict)
-│                   + `review_scratch` DB (the fix agent's play area)
-├── propose.py      the fix agent: Claude + a run_sql tool, looping against the scratch DB
+├── sandbox_db.py   boot a Solari sandbox, install+start postgres; load base_state
+│                   once, then fork `review` (verdict) + `review_scratch` (agent)
+├── propose.py      the fix agent: Claude + a run_sql tool, looping against a scratch fork
 ├── report.py       render Markdown; post_comment() via gh
 └── reviewer.py     orchestrator: for each file → verify → (fix agent) → re-verify → report
 
 review_pr.py        the CLI
-hello_world.py      SDK smoke test: boot sandbox, start postgres, SELECT 1
-fixtures/demo/      schema.sql + changes/ (one good, one broken)
+hello_world.py      SDK smoke test: boot sandbox, start postgres, fork + insert
+fixtures/demo/      schema.sql + seed.sql (optional) + changes/ (one good, one broken)
 ```
 
 ## What it leans on in the Solari SDK
@@ -124,6 +133,10 @@ fixtures/demo/      schema.sql + changes/ (one good, one broken)
   never has to be installed again.
 - **`sandbox.kill()`** — the review owns exactly one VM and destroys it in a
   `finally`, never relying on the idle timeout.
+
+Inside that one VM, per-check isolation is Postgres `CREATE DATABASE ...
+TEMPLATE` (a fork of `base_state`), not a fresh sandbox per check — same
+guarantee, ~0.5s, no extra control channels to manage.
 
 ## License
 
