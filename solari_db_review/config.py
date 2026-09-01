@@ -34,6 +34,7 @@ class ReviewOptions:
     sandbox_timeout_ms: int = 15 * 60 * 1000  # rolling idle window for the VM
     pg_snapshot_id: Optional[str] = None      # boot from here to skip the apt-get
     model: str = "claude-sonnet-5"
+    max_fix_iters: int = 6                     # fix agent's debug-loop budget
     out_dir: str = "output"
 
 
@@ -45,9 +46,10 @@ class StatementResult:
     sql: str
     ok: bool
     error: str = ""                    # the postgres ERROR line(s), empty when ok
-    proposed_fix: str = ""             # Claude's candidate, empty when ok / no idea
+    proposed_fix: str = ""             # the agent's candidate, empty when ok / no idea
     fix_rationale: str = ""
-    fix_ok: Optional[bool] = None      # did the candidate itself run clean?
+    fix_ok: Optional[bool] = None      # did the candidate pass the authoritative re-check?
+    fix_iters: int = 0                 # scratch-DB attempts the agent made
 
 
 @dataclass

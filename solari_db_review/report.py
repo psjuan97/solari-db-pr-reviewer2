@@ -34,12 +34,14 @@ def _one(s: StatementResult) -> str:
         tag = {True: "✅ verified — runs cleanly",
                False: "⚠️ still fails",
                None: "not verified"}[s.fix_ok]
-        out += ["", f"**Proposed fix** ({tag})"]
+        tries = f", {s.fix_iters} attempt(s)" if s.fix_iters else ""
+        out += ["", f"**Proposed fix** ({tag}{tries})"]
         if s.fix_rationale:
             out.append(f"> {s.fix_rationale}")
         out += ["", "```sql", s.proposed_fix.strip(), "```"]
     else:
-        out += ["", "_No fix proposed._"]
+        why = f" — {s.fix_rationale}" if s.fix_rationale else ""
+        out += ["", f"_No fix proposed{why}._"]
     return "\n".join(out)
 
 

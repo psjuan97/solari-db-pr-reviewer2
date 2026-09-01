@@ -5,18 +5,23 @@ An agent for **database pull requests**, built on [Solari](https://getsolari.com
 A PR changes some SQL — a migration, a view, a query. This tool boots a
 throwaway PostgreSQL in a **Solari sandbox**, loads the branch's base schema,
 and runs each changed `.sql` file against it. For any file that doesn't finish
-cleanly, it asks Claude for a fix, **re-runs that fix in the same sandbox**, and
-writes a Markdown review — which it can post back to the PR.
+cleanly, a **fix agent** debugs it in a loop — try a candidate, read the real
+Postgres error, revise, retry — against a scratch database in the *same*
+sandbox. Whatever it lands on is re-checked against the authoritative database,
+and that result (not the agent's word) goes into a Markdown review that can be
+posted back to the PR.
 
 ```
  ┌───────────┐  changed *.sql + base schema  ┌──────────────┐  per-file ok / error  ┌──────────────┐
  │   FETCH   │ ────────────────────────────► │   VERIFY     │ ────────────────────► │    REPORT    │
- │ gh CLI    │                               │ postgres in  │   ▲   fix verified    │ Markdown +   │
- │ or a dir  │                               │ a Solari VM  │   │                    │ gh pr comment│
- └───────────┘                               └──────────────┘   │                    └──────────────┘
-                                                     │   ┌──────┴───────┐
-                                                     └──►│   PROPOSE    │ Claude: (schema, sql, error) → fix
-                                                         └──────────────┘
+ │ gh CLI    │                               │ postgres in  │   ▲  fix re-verified   │ Markdown +   │
+ │ or a dir  │                               │ a Solari VM  │   │                     │ gh pr comment│
+ └───────────┘                               └──────────────┘   │                     └──────────────┘
+                                               │  ┌────────────┴─────────────┐
+                                       failure │  │        FIX AGENT         │  Claude + a run_sql tool,
+                                               └─►│  loop: try → error →     │  looping against a scratch
+                                                  │  revise → try (≤N times) │  DB in the same sandbox
+                                                  └──────────────────────────┘
 ```
 
 ## Why Solari
@@ -30,8 +35,14 @@ with Postgres already there.
 The check is deliberately simple, and matches what "does this PR work" usually
 means in practice: each file is run with `psql -v ON_ERROR_STOP=1` against a
 freshly reset copy of the base schema. **It runs cleanly** = every statement
-finished with no error, under a `statement_timeout`. v1 does not judge query
+finished with no error, under a `statement_timeout`. It does not judge query
 *semantics* — only that it executes and finishes.
+
+The fix agent gets its own `review_scratch` database in the same VM, reset to
+the clean schema before every candidate, so it can experiment without touching
+the authoritative result. It's told not to weaken the migration (no dropping
+constraints, no deleting the failing statement) — fix the cause, don't hide it.
+Its debug loop is capped by `ReviewOptions.max_fix_iters` (default 6).
 
 ## Quickstart
 
@@ -59,7 +70,7 @@ Runs cleanly.
 ### ❌ `002_orders_summary_view.sql`
     ERROR:  column u.name does not exist
 
-**Proposed fix** (✅ verified — runs cleanly)
+**Proposed fix** (✅ verified — runs cleanly, 2 attempt(s))
 > Use users.email and orders.total_cents; the referenced names do not exist.
     CREATE VIEW order_summary AS ...
 ```
@@ -91,10 +102,11 @@ solari_db_review/
 ├── config.py       ReviewSpec, ReviewOptions, StatementResult, ReviewResult (dataclasses)
 ├── env.py          tiny .env reader (no dependency)
 ├── fetch.py        input → ReviewSpec:  from_fixture(dir)  |  from_pr(url) via gh CLI
-├── sandbox_db.py   boot a Solari sandbox, install+start postgres, run_sql(), reset()
-├── propose.py      Claude call: (schema, statement, error) → candidate fix + rationale
+├── sandbox_db.py   boot a Solari sandbox, install+start postgres; `review` DB (verdict)
+│                   + `review_scratch` DB (the fix agent's play area)
+├── propose.py      the fix agent: Claude + a run_sql tool, looping against the scratch DB
 ├── report.py       render Markdown; post_comment() via gh
-└── reviewer.py     orchestrator: for each file → verify → propose → re-verify → report
+└── reviewer.py     orchestrator: for each file → verify → (fix agent) → re-verify → report
 
 review_pr.py        the CLI
 hello_world.py      SDK smoke test: boot sandbox, start postgres, SELECT 1
