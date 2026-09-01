@@ -1,0 +1,45 @@
+name: DB PR Review
+
+# Runs the reviewer whenever a PR touches .sql files. Requires two repo
+# secrets: SOLARI_API_KEY and ANTHROPIC_API_KEY (Settings -> Secrets and
+# variables -> Actions). Optionally set PG_SNAPSHOT_ID as a repo *variable*
+# once you have one, to skip the one-time postgres install on every run.
+on:
+  pull_request:
+    paths:
+      - "**/*.sql"
+
+permissions:
+  contents: read
+  pull-requests: write   # only used for the --comment step below
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Review changed SQL
+        env:
+          SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PG_SNAPSHOT_ID: ${{ vars.PG_SNAPSHOT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python review_pr.py ${{ github.event.pull_request.number }} \
+            --schema schema.sql \
+            --comment
+
+      - name: Upload review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-review
+          path: output/*.md

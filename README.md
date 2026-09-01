@@ -99,6 +99,31 @@ python review_pr.py 123 --schema db/schema.sql --comment   # also posts the revi
 what the changes run against. `--comment` posts the Markdown review to the PR
 via `gh pr comment` — nothing is posted without that flag.
 
+### Running it as a CI check
+
+[`.github/workflows/db-review.yml`](.github/workflows/db-review.yml) runs the
+reviewer on every PR that touches a `.sql` file, and posts the result as a PR
+comment. To use it in your own repo:
+
+1. Copy `solari_db_review/`, `review_pr.py`, `requirements.txt`, and the
+   workflow file into the repo you want reviewed (or add this repo as a
+   dependency — see note below).
+2. **Settings → Secrets and variables → Actions → New repository secret**:
+   add `SOLARI_API_KEY` and `ANTHROPIC_API_KEY`.
+3. Edit the workflow's `--schema` argument to point at your repo's real base
+   schema file (default assumes `schema.sql` at the root).
+4. After the first run, its log prints a snapshot id
+   (`tip: save PG_SNAPSHOT_ID=...`). Add it as a repo **variable** (not
+   secret) of the same name, `PG_SNAPSHOT_ID` — every later run then skips
+   the ~60s Postgres install and boots straight from it.
+5. Open a PR that touches a `.sql` file. The job fails (red ✗) if the PR's
+   SQL doesn't run cleanly, even when a fix was found — a human still has to
+   look. Read the PR comment for the fix; approve or edit it yourself.
+
+The job also uploads the Markdown review as a build artifact
+(**Actions → the run → Artifacts → db-review**) if you'd rather read it there
+than in the PR comment.
+
 ### First run is slower
 
 The first run installs Postgres in the sandbox (~60s) and prints a snapshot id.
