@@ -37,6 +37,9 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
           use_github_token: true
+          # Routed through your opencode.ai (Zen) subscription. Swap for any
+          # id from https://opencode.ai/docs/zen/ (opencode/<model>).
+          model: opencode/claude-sonnet-5
           prompt: |
             A database-migration PR failed its "DB PR Review" check. That check
             ran each changed .sql file against the base schema on a real
