@@ -4,13 +4,17 @@
     python review_pr.py --fixtures fixtures/demo
 
     # a real GitHub PR (needs `gh auth login`)
-    python review_pr.py https://github.com/owner/repo/pull/123
+    python review_pr.py https://github.com/owner/repo/pull/123 --schema db/schema.sql
     python review_pr.py 123 --schema db/schema.sql --comment
 
-What it does: boots postgres in a Solari sandbox, loads the base schema, runs
-each changed .sql file, and for any that fails asks Claude for a fix and
-re-checks that fix in the same sandbox. Prints a Markdown review and writes it
-to output/. With --comment, also posts it to the PR.
+What it does: boots postgres in a Solari sandbox, loads the base schema (+
+optional seed data) into a template DB, and runs each changed .sql file on a
+fresh fork of it. Reports which files don't finish cleanly and the exact
+Postgres error. Prints a Markdown review and writes it to output/. Exit code
+is 0 if every change runs cleanly, 1 otherwise.
+
+It does not fix anything - that's the opencode GitHub Action's job. This check
+then re-runs on the fix commit and verifies it.
 """
 from __future__ import annotations
 
@@ -45,12 +49,11 @@ async def main() -> int:
     spec = from_fixture(a.fixtures) if a.fixtures else from_pr(a.pr, a.schema)
 
     solari_key = load_key("SOLARI_API_KEY")
-    anthropic_key = load_key("ANTHROPIC_API_KEY")
     opts = ReviewOptions(pg_snapshot_id=get("PG_SNAPSHOT_ID"))
 
     print(f"reviewing: {spec.title}  ({len(spec.changes)} changed .sql file(s))")
     print("booting postgres in a Solari sandbox ...\n")
-    result = await review(spec, opts, solari_key, anthropic_key)
+    result = await review(spec, opts, solari_key)
 
     print(result.markdown)
 

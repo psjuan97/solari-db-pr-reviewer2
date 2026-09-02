@@ -19,6 +19,13 @@ def render(result: ReviewResult) -> str:
         lines.append(_one(s))
         lines.append("")
 
+    if not result.all_ok:
+        lines.append("---")
+        lines.append("Comment `/oc fix` on this PR to have the opencode agent "
+                     "propose a corrected migration; this check re-runs on its "
+                     "commit and verifies it.")
+        lines.append("")
+
     lines.append("---")
     lines.append("_Each file was run with `psql -v ON_ERROR_STOP=1` against the base "
                  "schema. \"Runs cleanly\" = every statement finished with no error._")
@@ -28,21 +35,7 @@ def render(result: ReviewResult) -> str:
 def _one(s: StatementResult) -> str:
     if s.ok:
         return f"### ✅ `{s.name}`\nRuns cleanly."
-
-    out = [f"### ❌ `{s.name}`", "", "```", s.error.strip(), "```"]
-    if s.proposed_fix:
-        tag = {True: "✅ verified — runs cleanly",
-               False: "⚠️ still fails",
-               None: "not verified"}[s.fix_ok]
-        tries = f", {s.fix_iters} attempt(s)" if s.fix_iters else ""
-        out += ["", f"**Proposed fix** ({tag}{tries})"]
-        if s.fix_rationale:
-            out.append(f"> {s.fix_rationale}")
-        out += ["", "```sql", s.proposed_fix.strip(), "```"]
-    else:
-        why = f" — {s.fix_rationale}" if s.fix_rationale else ""
-        out += ["", f"_No fix proposed{why}._"]
-    return "\n".join(out)
+    return "\n".join([f"### ❌ `{s.name}`", "", "```", s.error.strip(), "```"])
 
 
 def post_comment(pr: str, body: str) -> None:

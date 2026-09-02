@@ -1,27 +1,25 @@
 # solari-db-pr-reviewer — review database PRs on a real, disposable Postgres
 
-An agent for **database pull requests**, built on [Solari](https://getsolari.com).
+Two agents for **database pull requests**:
 
-A PR changes some SQL — a migration, a view, a query. This tool boots a
-throwaway PostgreSQL in a **Solari sandbox**, loads the branch's base schema,
-and runs each changed `.sql` file against it. For any file that doesn't finish
-cleanly, a **fix agent** debugs it in a loop — try a candidate, read the real
-Postgres error, revise, retry — against a scratch database in the *same*
-sandbox. Whatever it lands on is re-checked against the authoritative database,
-and that result (not the agent's word) goes into a Markdown review that can be
-posted back to the PR.
+- **The reviewer** ([Solari](https://getsolari.com)) — boots a throwaway
+  PostgreSQL in a microVM, loads the branch's base schema, and runs each
+  changed `.sql` file on a fresh fork of it. Reports which files don't finish
+  cleanly, with the exact Postgres error. It only *detects*.
+- **The fixer** ([opencode](https://opencode.ai) GitHub Action) — triggered by
+  a `/oc fix` comment on a failing PR. Reads the reviewer's error, rewrites the
+  broken migration on the PR branch, and pushes a commit. The reviewer then
+  re-runs on that commit and verifies the fix.
 
 ```
- ┌───────────┐  changed *.sql + base schema  ┌──────────────┐  per-file ok / error  ┌──────────────┐
- │   FETCH   │ ────────────────────────────► │   VERIFY     │ ────────────────────► │    REPORT    │
- │ gh CLI    │                               │ postgres in  │   ▲  fix re-verified   │ Markdown +   │
- │ or a dir  │                               │ a Solari VM  │   │                     │ gh pr comment│
- └───────────┘                               └──────────────┘   │                     └──────────────┘
-                                               │  ┌────────────┴─────────────┐
-                                       failure │  │        FIX AGENT         │  Claude + a run_sql tool,
-                                               └─►│  loop: try → error →     │  looping against a scratch
-                                                  │  revise → try (≤N times) │  DB in the same sandbox
-                                                  └──────────────────────────┘
+  PR touches *.sql
+        │
+        ▼
+ ┌──────────────┐   ❌ file X fails:        ┌───────────────┐  pushes fixed X    ┌──────────────┐
+ │  DB PR Review│   "column ... does not   │ opencode agent│  to the PR branch  │  DB PR Review│
+ │  (Solari VM) │──► exist" + the SQL   ──►│  (/oc fix)    │───────────────────►│  re-runs  ✅ │
+ └──────────────┘   posted as a comment    └───────────────┘                    └──────────────┘
+   detect                                    propose                              verify
 ```
 
 ## Why Solari
@@ -39,34 +37,29 @@ It does not judge query *semantics* — only that it executes and finishes.
 
 **Snapshot-and-fork.** The base schema — plus an optional `seed.sql` of
 representative data — is loaded **once** into a `base_state` template database.
-Every check then runs on a fresh **fork** of it:
+Every changed file then runs on a fresh **fork** of it:
 
 ```
-createdb --template=base_state <db>     # ~0.5s, and flat regardless of data size
+createdb --template=base_state review     # ~0.5s, and flat regardless of data size
 ```
 
-The reviewer forks `review` before each changed file; the fix agent forks
-`review_scratch` before every candidate it tries. All checks start from an
-identical known state, `base_state` is never written to, and forking stays
-fast even when the known state is a realistic dump rather than three empty
-tables. The fix agent is told not to weaken the migration (no dropping
-constraints, no deleting the failing statement) — fix the cause, don't hide it.
-Its debug loop is capped by `ReviewOptions.max_fix_iters` (default 6).
+`base_state` is never written to, so every check starts from an identical known
+state, and forking stays fast even when that state is a realistic dump rather
+than three empty tables.
 
-## Quickstart
+## Quickstart (local, no GitHub)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env      # then fill in SOLARI_API_KEY and ANTHROPIC_API_KEY
+cp .env.example .env      # then fill in SOLARI_API_KEY
 
-# review the bundled demo — no GitHub needed
+# review the bundled demo
 python review_pr.py --fixtures fixtures/demo
 ```
 
-The demo fixture has one clean migration and one broken view (it references
-columns that don't exist). Expected output:
+The demo fixture has one clean migration and two broken ones. Expected output:
 
 ```
 ## DB PR review — fixture: demo
@@ -79,55 +72,51 @@ Runs cleanly.
 ### ❌ `002_orders_summary_view.sql`
     ERROR:  column u.name does not exist
 
-**Proposed fix** (✅ verified — runs cleanly, 2 attempt(s))
-> Use users.email and orders.total_cents; the referenced names do not exist.
-    CREATE VIEW order_summary AS ...
+### ❌ `003_add_orders_index.sql`
+    ERROR:  column "placed_at" does not exist
 ```
 
-The review is also written to `output/<name>-review.md`.
+The review is also written to `output/<name>-review.md`, and `review_pr.py`
+exits non-zero when any change fails.
 
-### Reviewing a real GitHub PR
+### Reviewing a real GitHub PR from the CLI
 
 Needs the [`gh` CLI](https://cli.github.com) and `gh auth login`.
 
 ```bash
-python review_pr.py https://github.com/owner/repo/pull/123 --schema db/schema.sql
-python review_pr.py 123 --schema db/schema.sql --comment   # also posts the review
+python review_pr.py 123 --schema db/schema.sql            # print the review
+python review_pr.py 123 --schema db/schema.sql --comment  # also post it to the PR
 ```
 
 `--schema` is the repo path to the base schema file; its merge-base version is
-what the changes run against. `--comment` posts the Markdown review to the PR
-via `gh pr comment` — nothing is posted without that flag.
+what the changes run against.
 
-### Running it as a CI check
+## Wiring it into CI (the two-workflow flow)
 
-[`.github/workflows/db-review.yml`](.github/workflows/db-review.yml) runs the
-reviewer on every PR that touches a `.sql` file, and posts the result as a PR
-comment. To use it in your own repo:
+| Workflow | Trigger | Does |
+|---|---|---|
+| [`db-review.yml`](.github/workflows/db-review.yml)  | PR touches `**/*.sql` | boots the Solari VM, runs each changed file, comments the result, fails the check if any file errors |
+| [`opencode.yml`](.github/workflows/opencode.yml)    | `/oc fix` comment on a PR | opencode rewrites the failing migration on the PR branch and pushes a commit |
 
-1. Copy `solari_db_review/`, `review_pr.py`, `requirements.txt`, and the
-   workflow file into the repo you want reviewed (or add this repo as a
-   dependency — see note below).
-2. **Settings → Secrets and variables → Actions → New repository secret**:
-   add `SOLARI_API_KEY` and `ANTHROPIC_API_KEY`.
-3. Edit the workflow's `--schema` argument to point at your repo's real base
-   schema file (default assumes `schema.sql` at the root).
-4. After the first run, its log prints a snapshot id
-   (`tip: save PG_SNAPSHOT_ID=...`). Add it as a repo **variable** (not
-   secret) of the same name, `PG_SNAPSHOT_ID` — every later run then skips
-   the ~60s Postgres install and boots straight from it.
-5. Open a PR that touches a `.sql` file. The job fails (red ✗) if the PR's
-   SQL doesn't run cleanly, even when a fix was found — a human still has to
-   look. Read the PR comment for the fix; approve or edit it yourself.
+Setup in the repo you want reviewed:
 
-The job also uploads the Markdown review as a build artifact
-(**Actions → the run → Artifacts → db-review**) if you'd rather read it there
-than in the PR comment.
+1. Copy `solari_db_review/`, `review_pr.py`, `requirements.txt`, and both
+   workflow files into it.
+2. **Settings → Secrets and variables → Actions → Secrets**: add
+   - `SOLARI_API_KEY` — your Solari key
+   - `OPENCODE_API_KEY` — your opencode.ai subscription key
+3. Edit `db-review.yml`'s `--schema` argument to point at your repo's real base
+   schema file (this repo uses `fixtures/demo/schema.sql`; the default is
+   `schema.sql` at the root).
+4. After the first `db-review` run, its log prints a snapshot id
+   (`tip: save PG_SNAPSHOT_ID=...`). Add it under **Variables** (not Secrets)
+   as `PG_SNAPSHOT_ID` — later runs then skip the ~60s Postgres install.
+5. Open a PR that touches a `.sql` file. If it fails, comment `/oc fix`. When
+   opencode pushes its commit, `db-review` re-runs and (if the fix is good)
+   goes green. A human still reviews and merges.
 
-### First run is slower
-
-The first run installs Postgres in the sandbox (~60s) and prints a snapshot id.
-Put it in `.env` as `PG_SNAPSHOT_ID=` and later runs boot straight from it.
+`db-review.yml` also uploads the Markdown review as a build artifact
+(**Actions → the run → Artifacts → db-review**).
 
 ## Repo layout
 
@@ -137,14 +126,14 @@ solari_db_review/
 ├── env.py          tiny .env reader (no dependency)
 ├── fetch.py        input → ReviewSpec:  from_fixture(dir)  |  from_pr(url) via gh CLI
 ├── sandbox_db.py   boot a Solari sandbox, install+start postgres; load base_state
-│                   once, then fork `review` (verdict) + `review_scratch` (agent)
-├── propose.py      the fix agent: Claude + a run_sql tool, looping against a scratch fork
+│                   once, then fork `review` per changed file
 ├── report.py       render Markdown; post_comment() via gh
-└── reviewer.py     orchestrator: for each file → verify → (fix agent) → re-verify → report
+└── reviewer.py     orchestrator: for each file → run on a fork → record ok / error
 
 review_pr.py        the CLI
 hello_world.py      SDK smoke test: boot sandbox, start postgres, fork + insert
-fixtures/demo/      schema.sql + seed.sql (optional) + changes/ (one good, one broken)
+fixtures/demo/      schema.sql + seed.sql (optional) + changes/ (one good, two broken)
+.github/workflows/  db-review.yml (detect)  +  opencode.yml (fix)
 ```
 
 ## What it leans on in the Solari SDK
@@ -159,8 +148,8 @@ fixtures/demo/      schema.sql + seed.sql (optional) + changes/ (one good, one b
 - **`sandbox.kill()`** — the review owns exactly one VM and destroys it in a
   `finally`, never relying on the idle timeout.
 
-Inside that one VM, per-check isolation is Postgres `CREATE DATABASE ...
-TEMPLATE` (a fork of `base_state`), not a fresh sandbox per check — same
+Inside that one VM, per-file isolation is Postgres `CREATE DATABASE ...
+TEMPLATE` (a fork of `base_state`), not a fresh sandbox per file — same
 guarantee, ~0.5s, no extra control channels to manage.
 
 ## License

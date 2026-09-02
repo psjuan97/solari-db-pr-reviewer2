@@ -1,21 +1,15 @@
 """A disposable PostgreSQL inside a Solari sandbox.
 
 One microVM, one postgres. The base schema (and, later, any seed data) is
-loaded **once** into a template database, ``base_state``. Every check then
-*forks* from it:
+loaded **once** into a template database, ``base_state``. Every changed file
+then runs on a fresh *fork* of it:
 
-    createdb --template=base_state <db>     # ~100ms, regardless of data size
+    createdb --template=base_state review     # ~0.5s, regardless of data size
 
-  * ``review``          - the authoritative fork. The reviewer runs a changed
-                          file here; its exit code is the verdict. Re-forked
-                          from base_state before each file.
-  * ``review_scratch``  - the fix agent's fork (see ``propose.py``). Re-forked
-                          before every candidate it tries.
-
-Forking beats replaying ``schema.sql`` per attempt: it's a file copy, so it
-stays fast once the known state is a realistic dump rather than three
-``CREATE TABLE``s. ``base_state`` is never written to, so all forks start
-identical.
+Re-forked from ``base_state`` before each file, so every check starts from an
+identical known state. Forking beats replaying ``schema.sql`` each time: it's
+a file copy, so it stays fast once the known state is a realistic dump rather
+than three ``CREATE TABLE``s. ``base_state`` is never written to.
 
 The first ever run does a one-time ``apt-get install postgresql`` and takes a
 snapshot; pass that id back (``ReviewOptions.pg_snapshot_id``) and later VMs
@@ -30,8 +24,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 BASE_STATE_DB = "base_state"   # the template; loaded once, never mutated
-REVIEW_DB = "review"           # authoritative fork
-SCRATCH_DB = "review_scratch"  # the fix agent's fork
+REVIEW_DB = "review"           # per-file fork
 
 # Installs postgres (no-op if the snapshot already has it) and starts the cluster.
 _BOOT = r"""
@@ -72,7 +65,7 @@ class SandboxDb:
         optionally a seed dump. Everything forks from the result.
         """
         # The snapshot may already carry these from an earlier run - start clean.
-        for db in (REVIEW_DB, SCRATCH_DB, BASE_STATE_DB):
+        for db in (REVIEW_DB, BASE_STATE_DB):
             await self._dropdb(db)
         await self._createdb(BASE_STATE_DB, template="template0")
         ok, out = await self._psql_file(BASE_STATE_DB, "_schema.sql", schema_sql)
@@ -92,7 +85,7 @@ class SandboxDb:
         await self._dropdb(db)
         await self._createdb(db, template=BASE_STATE_DB)
 
-    # --- the reviewer's authoritative fork -----------------------------------
+    # --- the per-file fork -------------------------------------------------
 
     async def reset(self) -> None:
         """Re-fork ``review`` from the clean base state."""
@@ -101,17 +94,6 @@ class SandboxDb:
     async def run_sql(self, name: str, sql: str) -> Tuple[bool, str]:
         """Run a SQL blob against ``review``. (ok, output)."""
         return await self._psql_file(REVIEW_DB, name, sql)
-
-    # --- the fix agent's fork ----------------------------------------------
-
-    async def try_on_scratch(self, sql: str) -> Tuple[bool, str]:
-        """Re-fork ``review_scratch`` from base state, then run ``sql`` on it.
-
-        The tool the fix agent calls in its loop - one sandbox round trip, and
-        just as fast on a big seeded database as on an empty one.
-        """
-        await self.fork(SCRATCH_DB)
-        return await self._psql_file(SCRATCH_DB, "_scratch.sql", sql)
 
     async def snapshot(self, name: str = "pg-base") -> str:
         return await self._sb.snapshot(name)

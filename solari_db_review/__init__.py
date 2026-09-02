@@ -1,9 +1,12 @@
 """solari-db-pr-reviewer - review database PRs on a real, disposable postgres.
 
 Give it a :class:`ReviewSpec` (base schema + the SQL files a PR changed). It
-boots postgres in a Solari sandbox, runs each changed file, and for any that
-doesn't finish cleanly it asks Claude for a fix and re-checks that fix in the
-same sandbox. The result is a :class:`ReviewResult` with a Markdown review.
+boots postgres in a Solari sandbox and runs each changed file on a fresh fork
+of the base state, reporting which ones don't finish cleanly and the exact
+Postgres error. The result is a :class:`ReviewResult` with a Markdown review.
+
+Fixing a broken migration is a separate step - the opencode GitHub Action -
+and this reviewer verifies that fix on its next run.
 """
 from .config import (
     ReviewOptions,

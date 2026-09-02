@@ -1,9 +1,13 @@
 name: DB PR Review
 
-# Runs the reviewer whenever a PR touches .sql files. Requires two repo
-# secrets: SOLARI_API_KEY and ANTHROPIC_API_KEY (Settings -> Secrets and
-# variables -> Actions). Optionally set PG_SNAPSHOT_ID as a repo *variable*
-# once you have one, to skip the one-time postgres install on every run.
+# Runs the reviewer whenever a PR touches .sql files: boots postgres in a
+# Solari sandbox, runs each changed file, and fails (red X) if any doesn't
+# finish cleanly. It does NOT fix anything - comment `/oc fix` on the PR to
+# have the opencode agent propose a correction (see opencode.yml); this check
+# then re-runs on that commit and verifies it.
+#
+# Repo secret required: SOLARI_API_KEY
+# Repo variable optional: PG_SNAPSHOT_ID (skips the one-time postgres install)
 on:
   pull_request:
     paths:
@@ -11,7 +15,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write   # only used for the --comment step below
+  pull-requests: write   # for the --comment step
 
 jobs:
   review:
@@ -29,7 +33,6 @@ jobs:
       - name: Review changed SQL
         env:
           SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PG_SNAPSHOT_ID: ${{ vars.PG_SNAPSHOT_ID }}
           GH_TOKEN: ${{ github.token }}
         run: |
