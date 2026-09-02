@@ -2,9 +2,9 @@ name: opencode
 
 # The fix agent. Triggered by commenting `/oc fix` (or `/opencode`) on a PR
 # where the DB PR Review check failed. opencode reads the review comment (which
-# has the base schema, the failing SQL file, and the exact Postgres error),
-# rewrites the broken migration on the PR branch, and pushes a commit. The DB
-# PR Review workflow then re-runs on that commit and verifies the fix.
+# has the base schema path, the failing SQL file, and the exact Postgres
+# error), rewrites the broken migration on the PR branch, and pushes a commit.
+# The DB PR Review workflow then re-runs on that commit and verifies the fix.
 #
 # Repo secret required: OPENCODE_API_KEY   (your opencode.ai subscription key)
 on:
@@ -13,33 +13,34 @@ on:
   pull_request_review_comment:
     types: [created]
 
-permissions:
-  contents: write         # push the fix commit
-  pull-requests: write    # comment on the PR
-  issues: write
-  id-token: write
-
 jobs:
   opencode:
     if: |
       github.event.issue.pull_request != null &&
-      (contains(github.event.comment.body, '/oc') ||
-       contains(github.event.comment.body, '/opencode'))
+      (contains(github.event.comment.body, ' /oc') ||
+       startsWith(github.event.comment.body, '/oc') ||
+       contains(github.event.comment.body, ' /opencode') ||
+       startsWith(github.event.comment.body, '/opencode'))
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write        # push the fix commit
+      pull-requests: write   # comment on the PR
+      issues: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: anomalyco/opencode/github@latest
+      - name: Run opencode
+        uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
           use_github_token: true
-          # Routed through your opencode.ai (Zen) subscription. Swap for any
-          # id from https://opencode.ai/docs/zen/ (opencode/<model>).
-          model: opencode/claude-sonnet-5
+          model: opencode-go/qwen3.8-flash
           prompt: |
             A database-migration PR failed its "DB PR Review" check. That check
             ran each changed .sql file against the base schema on a real
