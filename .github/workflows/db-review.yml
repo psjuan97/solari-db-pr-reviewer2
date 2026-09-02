@@ -33,8 +33,10 @@ jobs:
           PG_SNAPSHOT_ID: ${{ vars.PG_SNAPSHOT_ID }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # In your own repo, point --schema at your real base schema file.
+          # This repo has no root schema.sql, so we use the bundled demo one.
           python review_pr.py ${{ github.event.pull_request.number }} \
-            --schema schema.sql \
+            --schema fixtures/demo/schema.sql \
             --comment
 
       - name: Upload review

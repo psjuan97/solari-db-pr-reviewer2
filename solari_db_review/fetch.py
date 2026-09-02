@@ -47,9 +47,14 @@ def from_pr(pr: str, schema_path: str = "schema.sql") -> ReviewSpec:
     meta = json.loads(view)
 
     changed = _gh(["pr", "diff", pr, "--name-only"]).splitlines()
-    sql_files = [f for f in changed if f.strip().endswith(".sql")]
+    sql_files = [
+        f for f in changed
+        if f.strip().endswith(".sql") and f.strip() != schema_path
+    ]
     if not sql_files:
-        raise SystemExit("this PR changes no .sql files")
+        raise SystemExit(
+            "this PR changes no .sql files (other than the base schema itself)"
+        )
 
     changes = [
         SqlFile(name=path, sql=_read_file(path, meta["headRefOid"]))
